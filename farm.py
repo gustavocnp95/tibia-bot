@@ -13,6 +13,7 @@ import time
 import json
 import random
 import threading
+from collections import deque
 import tkinter as tk
 from tkinter import font as tkfont
 from pynput import mouse
@@ -159,16 +160,10 @@ def has_mana_calibration():
 # ─── Attack ───────────────────────────────────────────────────────────────────
 
 def is_attacking():
-    bl = config.get("battle_list")
-    if not bl:
-        return False
-    img = _grab({"left": int(bl["x"]), "top": int(bl["y"]),
-                 "width": int(bl["width"]), "height": int(bl["height"])})
-    strip = img[:, :40, :]
-    r = strip[:, :, 2].astype(np.int32)
-    g = strip[:, :, 1].astype(np.int32)
-    b = strip[:, :, 0].astype(np.int32)
-    return int(np.sum((r > 140) & (g < 80) & (b < 80) & (r > g + 60) & (r > b + 60))) > 10
+    """Mantido por compatibilidade — não usar para detecção por cor.
+    A detecção por cor falha com criaturas que têm sprites vermelhas (ex: spider).
+    O estado de ataque é agora rastreado internamente via last_click."""
+    return False
 
 def find_enemy():
     bl = config.get("battle_list")
@@ -176,13 +171,22 @@ def find_enemy():
         return None
     img = _grab({"left": int(bl["x"]), "top": int(bl["y"]),
                  "width": int(bl["width"]), "height": int(bl["height"])})
-    r = img[:, :, 2].astype(np.int32)
-    g = img[:, :, 1].astype(np.int32)
-    b = img[:, :, 0].astype(np.int32)
-    mask = (((g > 130) & (r < 100) & (b < 100)) | ((r > 170) & (g > 170) & (b < 80)))
+    # Só escaneia a metade esquerda: onde ficam o ícone e o nome da criatura.
+    # A metade direita contém as barras de HP/mana, que mudam de cor (verde→amarelo→vermelho)
+    # e causariam detecção falsa.
+    half_w = max(1, img.shape[1] // 2)
+    region = img[:, :half_w, :]
+    r = region[:, :, 2].astype(np.int32)
+    g = region[:, :, 1].astype(np.int32)
+    b = region[:, :, 0].astype(np.int32)
+    mask = (
+        ((g > 130) & (r < 100) & (b < 100)) |  # nome verde
+        ((r > 170) & (g > 170) & (b < 80))  |  # nome amarelo
+        ((r > 150) & (g < 80)  & (b < 80))      # nome/sprite vermelho (ex: spider hostil)
+    )
     row_sums = mask.sum(axis=1)
     for row in range(img.shape[0]):
-        if row_sums[row] >= 15:
+        if row_sums[row] >= 10:
             return (int(bl["x"]) + int(bl["width"]) // 2, int(bl["y"]) + row)
     return None
 
@@ -203,6 +207,213 @@ def click_enemy(x, y):
         mse.position = prev
 
 
+# ─── Navegação por minimapa ───────────────────────────────────────────────────
+
+_minimap_dir = None  # (dx, dy) normalizado da última direção de movimento
+
+def find_minimap_target():
+    global _minimap_dir
+    """Captura o minimapa, BFS a partir do centro (posição do char) pelos pixels
+    andáveis (brilho > threshold) e retorna (tx, ty) de tela de um tile aleatório
+    alcançável. Retorna None se minimapa não calibrado ou sem tiles encontrados."""
+    mm = config.get("minimap")
+    if not mm:
+        return None
+    reg = _region("minimap")
+    img = _grab(reg)
+    h, w = img.shape[:2]
+    cx, cy = w // 2, h // 2
+
+    threshold = config.get("minimap_floor_brightness", 40)
+    floor_mask = np.max(img[:, :, :3], axis=2) > threshold
+
+    if not floor_mask[cy, cx]:
+        return None
+
+    dist_min = config.get("minimap_walk_dist_min", 10)
+    dist_max = config.get("minimap_walk_dist_max", 30)
+
+    visited = np.zeros((h, w), dtype=bool)
+    visited[cy, cx] = True
+    queue = deque([(cx, cy)])
+    reachable = []
+
+    while queue:
+        x, y = queue.popleft()
+        dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+        if dist > dist_max:
+            continue
+        if dist >= dist_min:
+            reachable.append((x, y))
+        for ddx, ddy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nx, ny = x + ddx, y + ddy
+            if 0 <= nx < w and 0 <= ny < h and not visited[ny, nx] and floor_mask[ny, nx]:
+                visited[ny, nx] = True
+                queue.append((nx, ny))
+
+    if not reachable:
+        return None
+
+    # Priorizar tiles na direção atual (produto escalar > 0 = cone de ±90°)
+    if _minimap_dir is not None:
+        dir_x, dir_y = _minimap_dir
+        forward = [(x, y) for x, y in reachable
+                   if (x - cx) * dir_x + (y - cy) * dir_y > 0]
+        candidates = forward if forward else reachable  # sem saída → muda direção
+    else:
+        candidates = reachable
+
+    px, py = random.choice(candidates)
+
+    # Atualizar direção após escolha
+    mag = ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+    if mag > 0:
+        _minimap_dir = ((px - cx) / mag, (py - cy) / mag)
+
+    return int(mm["x"]) + px, int(mm["y"]) + py
+
+
+# ─── Loot ────────────────────────────────────────────────────────────────────
+
+def _find_sparkle_corpses():
+    """Retorna lista de (screen_x, screen_y) de tiles com sparkle branco (loot disponível)."""
+    ga = config.get("game_area")
+    if not ga:
+        return []
+    img = _grab(_region("game_area"))
+    # Sparkle = pixels bem brancos/prata em fundo escuro
+    b = img[:, :, 0].astype(np.int32)
+    g = img[:, :, 1].astype(np.int32)
+    r = img[:, :, 2].astype(np.int32)
+    bright = (r > 210) & (g > 210) & (b > 210)
+    tile = config.get("tile_size", 32)
+    h, w = img.shape[:2]
+    positions = []
+    for row in range(0, h, tile):
+        for col in range(0, w, tile):
+            if int(np.sum(bright[row:row + tile, col:col + tile])) >= 8:
+                sx = int(ga["x"]) + col + tile // 2
+                sy = int(ga["y"]) + row + tile // 2
+                positions.append((sx, sy))
+    return positions
+
+
+def _gold_mask(img):
+    """Máscara BGR dos pixels amarelo-dourados de gold coins."""
+    r = img[:, :, 2].astype(np.int32)
+    g = img[:, :, 1].astype(np.int32)
+    b = img[:, :, 0].astype(np.int32)
+    # Gold: R alto, G médio-alto, B baixo  (amarelo-laranja)
+    return (r > 160) & (g > 100) & (b < 70) & (r > g + 30) & (r > b + 100)
+
+
+def _collect_gold_from_area():
+    """Ctrl+clica em cada célula 32×32 da loot_area que tem pixels dourados."""
+    reg = _region("loot_area")
+    if not reg:
+        return
+    img = _grab(reg)
+    mask = _gold_mask(img)
+    if int(np.sum(mask)) == 0:
+        return
+    cell = 32
+    h, w = img.shape[:2]
+    for row in range(0, h, cell):
+        for col in range(0, w, cell):
+            if np.sum(mask[row:row + cell, col:col + cell]) > 8:
+                px = int(reg["left"]) + col + cell // 2
+                py = int(reg["top"])  + row + cell // 2
+                prev = mse.position
+                kbd.press(Key.ctrl)
+                time.sleep(0.05)
+                mse.position = (px, py)
+                time.sleep(0.05)
+                mse.click(Button.left)
+                time.sleep(0.05)
+                kbd.release(Key.ctrl)
+                mse.position = prev
+                time.sleep(0.35)
+                # Re-capturar imagem para pegar próximo item atualizado
+                img  = _grab(reg)
+                mask = _gold_mask(img)
+
+
+def _close_loot_containers():
+    """Fecha todos os containers na loot_area clicando nos botões X.
+    Escaneia da esquerda pra direita e de cima pra baixo procurando
+    o padrão do botão X (pixel escuro rodeado de claro no topo-direito
+    de cada janela de container)."""
+    reg = _region("loot_area")
+    if not reg:
+        return
+    img      = _grab(reg)
+    h, w     = img.shape[:2]
+    # Percorre em busca de linhas de header de container:
+    # headers costumam ser ~20px de altura com cor média (marrom/cinza)
+    # e ficam no topo de cada container empilhado.
+    scan_y       = 0
+    header_h     = 20
+    min_gap      = 30    # mínimo de pixels entre dois headers clicados
+    last_click_y = -999
+    while scan_y < h - header_h:
+        strip    = img[scan_y: scan_y + header_h, :, :]
+        mean_lum = float(np.mean(strip[:, :, :3]))
+        # Header de container: não totalmente escuro, não totalmente branco
+        if 35 < mean_lum < 150 and (scan_y - last_click_y) > min_gap:
+            # O X fica perto da borda direita, no meio vertical do header
+            x_px = int(reg["left"]) + w - 8
+            y_px = int(reg["top"])  + scan_y + header_h // 2
+            prev = mse.position
+            mse.position = (x_px, y_px)
+            time.sleep(0.05)
+            mse.click(Button.left)
+            mse.position = prev
+            time.sleep(0.15)
+            last_click_y = scan_y
+            scan_y      += header_h
+        else:
+            scan_y += 2
+
+
+def loot_corpses():
+    """Detecta cadáveres brilhando → abre → coleta gold → fecha containers."""
+    ga = config.get("game_area")
+    if not ga or not config.get("loot_area"):
+        return
+
+    # 1. Achar tiles com sparkle (corpos com loot)
+    targets = _find_sparkle_corpses()
+
+    # Fallback: se não achou sparkle, tenta tiles ao redor do centro
+    if not targets:
+        cx    = int(ga["x"]) + int(ga["width"])  // 2
+        cy    = int(ga["y"]) + int(ga["height"]) // 2
+        tile  = config.get("tile_size", 32)
+        offsets = [
+            (0,0),(0,-1),(0,1),(-1,0),(1,0),
+            (-1,-1),(1,-1),(-1,1),(1,1),
+        ]
+        targets = [(cx + dx*tile, cy + dy*tile) for dx, dy in offsets]
+
+    # 2. Para cada cadáver: abrir, coletar gold
+    for tx, ty in targets:
+        prev = mse.position
+        mse.position = (tx, ty)
+        time.sleep(0.05)
+        mse.click(Button.left)
+        time.sleep(0.1)
+        mse.click(Button.left)   # double-click abre o cadáver
+        mse.position = prev
+        time.sleep(0.6)          # aguarda container aparecer
+        _collect_gold_from_area()
+        time.sleep(0.15)
+
+    # 3. Fechar todos os containers abertos
+    if targets:
+        time.sleep(0.2)
+        _close_loot_containers()
+
+
 # ─── Loop principal ───────────────────────────────────────────────────────────
 
 running = False
@@ -218,9 +429,9 @@ def run():
     MANA_COOLDOWN  = 8.0
 
     in_combat        = False
+    last_enemy_seen  = 0.0   # timestamp da última vez que vimos um inimigo
     move_log         = []   # lista de (char_dx, char_dy) em tiles
     prev_frame       = None
-    wp_idx           = 0
     last_walk_frame  = None
 
     while running:
@@ -233,7 +444,7 @@ def run():
         # ── Heal
         heal_spell  = config.get("heal_spell",  "").strip()
         heal_potion = config.get("heal_potion", "").strip()
-        if (heal_spell or heal_potion) and has_hp_calibration():
+        if heal_enabled_var.get() and (heal_spell or heal_potion) and has_hp_calibration():
             hp         = get_hp_percent()
             mana_empty = get_mana_percent() < 5 if has_mana_calibration() else False
             root.after(0, ui_update_bars, hp, get_mana_percent() if has_mana_calibration() else None)
@@ -246,7 +457,7 @@ def run():
 
         # ── Mana potion
         mana_potion = config.get("mana_potion", "").strip()
-        if mana_potion and has_mana_calibration() and now - last_mana_pot >= MANA_COOLDOWN:
+        if mana_enabled_var.get() and mana_potion and has_mana_calibration() and now - last_mana_pot >= MANA_COOLDOWN:
             mana_pct       = get_mana_percent()
             mana_threshold = config.get("mana_threshold", 5)
             root.after(0, ui_update_bars, get_hp_percent() if has_hp_calibration() else None, mana_pct)
@@ -268,73 +479,66 @@ def run():
         prev_frame = curr_frame
 
         # ── Attack + estado de combate
-        attacking = is_attacking()
-        enemy     = None if attacking else find_enemy()
+        if attack_enabled_var.get():
+            enemy = find_enemy()
+        else:
+            enemy = None
 
-        if attacking or enemy:
+        COMBAT_LINGER = 2.0   # segundos sem ver inimigo para declarar combate encerrado
+
+        if enemy:
+            last_enemy_seen = now
             if not in_combat:
                 in_combat  = True
                 move_log   = []
                 prev_frame = curr_frame
 
-            if attacking:
-                if is_ready("attack_icon"):
-                    press_key(config.get("attack_key", "f2"))
-                time.sleep(0.3)
+            if now - last_click >= CLICK_COOLDOWN:
+                click_enemy(*enemy)
+                last_click = now
             else:
-                if now - last_click >= CLICK_COOLDOWN:
-                    click_enemy(*enemy)
-                    last_click = now
-                time.sleep(0.15)
+                attack_key = config.get("attack_key", "").strip()
+                if attack_key and is_ready("attack_icon"):
+                    press_key(attack_key)
+            time.sleep(0.15)
 
         else:
-            # Sem inimigos — detectar trava: se passou o walk_delay e não moveu, forçar novo clique
-            if last_walk_frame is not None and curr_frame is not None:
-                tile_size = config.get("tile_size", 32)
-                fdx, fdy  = detect_tile_shift(last_walk_frame, curr_frame, tile_size)
-                if (fdx, fdy) == (0, 0) and now - last_walk >= config.get("walk_delay", 2.0):
-                    last_walk = 0.0   # força sorteio imediato de novo ponto
-                    last_walk_frame = None
+            # Só declara fim de combate após COMBAT_LINGER segundos sem ver inimigo.
+            # Evita que um falso negativo de find_enemy() faça o bot andar no meio da luta.
+            combat_over = in_combat and (now - last_enemy_seen >= COMBAT_LINGER)
 
-            if in_combat:
+            if combat_over:
                 in_combat  = False
+                if loot_enabled_var.get():
+                    loot_corpses()
                 tile_size  = config.get("tile_size", 32)
                 retrace_path(move_log, tile_size)
                 move_log   = []
                 prev_frame = None
 
-            # ── Andar: waypoints ou exploração aleatória
-            walk_delay = config.get("walk_delay", 2.0)
-            ga         = config.get("game_area")
-            if ga and now - last_walk >= walk_delay:
-                tile_size     = config.get("tile_size", 32)
-                waypoints_rel = config.get("waypoints_rel", [])
-                cx = int(ga["x"]) + int(ga["width"])  // 2
-                cy = int(ga["y"]) + int(ga["height"]) // 2
+            # Só anda se não estiver em combate
+            if not in_combat:
+                # Detectar trava: se passou o walk_delay e não moveu, forçar novo clique
+                if last_walk_frame is not None and curr_frame is not None:
+                    tile_size = config.get("tile_size", 32)
+                    fdx, fdy  = detect_tile_shift(last_walk_frame, curr_frame, tile_size)
+                    if (fdx, fdy) == (0, 0) and now - last_walk >= config.get("walk_delay", 2.0):
+                        last_walk = 0.0
+                        last_walk_frame = None
 
-                if waypoints_rel:
-                    wp = waypoints_rel[wp_idx % len(waypoints_rel)]
-                    tx = cx + int(wp["dx"])
-                    ty = cy + int(wp["dy"])
-                    wp_idx = (wp_idx + 1) % len(waypoints_rel)
-                else:
-                    # Exploração aleatória dentro do raio configurado
-                    radius = config.get("explore_radius", 4)
-                    choices = [i for i in range(-radius, radius + 1) if i != 0]
-                    tx = cx + random.choice(choices) * tile_size
-                    ty = cy + random.choice(choices) * tile_size
-                    # Mantém dentro da game area com margem de 1 tile
-                    margin = tile_size
-                    tx = max(int(ga["x"]) + margin, min(tx, int(ga["x"]) + int(ga["width"])  - margin))
-                    ty = max(int(ga["y"]) + margin, min(ty, int(ga["y"]) + int(ga["height"]) - margin))
-
-                prev_pos = mse.position
-                mse.position = (tx, ty)
-                time.sleep(0.05)
-                mse.click(Button.left)
-                mse.position = prev_pos
-                last_walk_frame = curr_frame   # salva pra detectar trava
-                last_walk = now
+                # ── Andar: BFS no minimapa para tile andável aleatório
+                walk_delay = config.get("walk_delay", 2.0)
+                if now - last_walk >= walk_delay:
+                    target = find_minimap_target()
+                    if target:
+                        tx, ty = target
+                        prev_pos = mse.position
+                        mse.position = (tx, ty)
+                        time.sleep(0.05)
+                        mse.click(Button.left)
+                        mse.position = prev_pos
+                        last_walk_frame = curr_frame
+                        last_walk = now
 
             time.sleep(0.15)
 
@@ -354,6 +558,8 @@ CALIB_PAIRS = {
     "hi_icon":  "heal_potion_icon",
     "mi_icon":  "mana_potion_icon",
     "atk_icon": "attack_icon",
+    "mm":       "minimap",
+    "loot":     "loot_area",
 }
 
 
@@ -368,17 +574,6 @@ def on_mouse_click(x, y, button, pressed):
     global calibrating, _corner1, paused
 
     if not pressed or button != Button.middle:
-        return
-
-    # ── Modo gravação de waypoints
-    if calibrating == "wp_add":
-        ga = config.get("game_area")
-        if ga:
-            cx = int(ga["x"]) + int(ga["width"])  // 2
-            cy = int(ga["y"]) + int(ga["height"]) // 2
-            config.setdefault("waypoints_rel", []).append({"dx": x - cx, "dy": y - cy})
-            save_config()
-            root.after(0, _update_wp_label)
         return
 
     if calibrating is None:
@@ -445,6 +640,18 @@ root.title("Farm Bot")
 root.configure(bg=BG)
 root.resizable(False, False)
 
+heal_enabled_var   = tk.BooleanVar(value=config.get("heal_enabled",   True))
+mana_enabled_var   = tk.BooleanVar(value=config.get("mana_enabled",   True))
+attack_enabled_var = tk.BooleanVar(value=config.get("attack_enabled", True))
+loot_enabled_var   = tk.BooleanVar(value=config.get("loot_enabled",   False))
+
+def on_section_toggle():
+    config["heal_enabled"]   = heal_enabled_var.get()
+    config["mana_enabled"]   = mana_enabled_var.get()
+    config["attack_enabled"] = attack_enabled_var.get()
+    config["loot_enabled"]   = loot_enabled_var.get()
+    save_config()
+
 title_font   = tkfont.Font(family="Helvetica", size=13, weight="bold")
 section_font = tkfont.Font(family="Helvetica", size=10, weight="bold")
 normal_font  = tkfont.Font(family="Helvetica", size=9)
@@ -455,6 +662,7 @@ _calib_labels = {}
 _hint_label   = None
 _hp_pct_label   = None
 _mana_pct_label = None
+_key_btn_refs = {}  # config_key → Button widget
 
 
 def ui_update_status():
@@ -487,6 +695,14 @@ def separator(parent):
 
 def section_label(parent, text):
     tk.Label(parent, text=text, font=section_font, bg=BG, fg=ACCENT).pack(anchor="w", padx=16, pady=(6, 2))
+
+def section_label_with_check(parent, text, var):
+    frame = tk.Frame(parent, bg=BG)
+    frame.pack(fill="x", padx=16, pady=(6, 2))
+    tk.Label(frame, text=text, font=section_font, bg=BG, fg=ACCENT).pack(side="left")
+    tk.Checkbutton(frame, variable=var, command=on_section_toggle,
+                   bg=BG, activebackground=BG, selectcolor="#37474f",
+                   relief="flat", cursor="hand2").pack(side="right")
 
 def flat_btn(parent, text, cmd, bg="#37474f", **kw):
     return tk.Button(parent, text=text, command=cmd,
@@ -524,6 +740,7 @@ def key_row(parent, label_text, config_key, icon_key=None, icon_kind=None):
                   relief="flat", cursor="hand2", padx=10, pady=4, font=normal_font, width=6)
     b.pack(side="left", padx=(0, 6))
     btn_ref[0] = b
+    _key_btn_refs[config_key] = b
 
     if icon_key and icon_kind:
         icon_lbl = tk.Label(frame, text=_region_text(icon_key), bg=BG, fg=MUTED, font=normal_font)
@@ -532,29 +749,17 @@ def key_row(parent, label_text, config_key, icon_key=None, icon_kind=None):
         flat_btn(frame, "Calibrar ícone", lambda: start_calib(icon_kind)).pack(side="right")
 
 
-_wp_count_label  = None
-_wp_record_btn   = None
 
-def _update_wp_label():
-    if _wp_count_label:
-        n = len(config.get("waypoints_rel", []))
-        _wp_count_label.config(text=f"{n} waypoint(s)")
+HOTKEY_KEYS = ["attack_key", "heal_spell", "heal_potion", "mana_potion"]
 
-def _toggle_wp_record():
-    global calibrating
-    if calibrating == "wp_add":
-        calibrating = None
-        _wp_record_btn.config(text="Gravar Waypoint", bg="#37474f", fg="black")
-        ui_set_hint("")
-    else:
-        calibrating = "wp_add"
-        _wp_record_btn.config(text="Parar gravação", bg="#f57f17", fg="black")
-        ui_set_hint("Scroll-click no mapa para gravar waypoints")
-
-def _clear_waypoints():
-    config["waypoints_rel"] = []
+def _clear_hotkeys():
+    for k in HOTKEY_KEYS:
+        config[k] = ""
     save_config()
-    _update_wp_label()
+    for k in HOTKEY_KEYS:
+        btn = _key_btn_refs.get(k)
+        if btn:
+            btn.config(text="—")
 
 
 def on_ligar():
@@ -587,14 +792,14 @@ _status_label.pack(side="left", padx=(6, 0))
 separator(root)
 
 # ── Attack
-section_label(root, "⚔  Attack")
+section_label_with_check(root, "⚔  Attack", attack_enabled_var)
 calib_row(root, "Calibrar", "battle_list", "bl")
 key_row(root, "Tecla de ataque:", "attack_key", "attack_icon", "atk_icon")
 
 separator(root)
 
 # ── Heal
-section_label(root, "❤  Heal  (< 90%)")
+section_label_with_check(root, "❤  Heal  (< 90%)", heal_enabled_var)
 key_row(root, "Spell de heal:",  "heal_spell",  "heal_spell_icon",  "hs_icon")
 key_row(root, "Potion de heal:", "heal_potion", "heal_potion_icon", "hi_icon")
 calib_row(root, "Calibrar texto HP", "hp_bar", "hp")
@@ -607,7 +812,7 @@ _hp_pct_label.pack(side="left", padx=(6, 0))
 separator(root)
 
 # ── Mana
-section_label(root, "🔮  Mana")
+section_label_with_check(root, "🔮  Mana", mana_enabled_var)
 key_row(root, "Potion de mana:", "mana_potion", "mana_potion_icon", "mi_icon")
 calib_row(root, "Calibrar texto Mana", "mana_bar", "mana")
 frame_mana_disp = tk.Frame(root, bg=BG)
@@ -636,50 +841,43 @@ def on_mana_thr_change(*_):
 
 mana_thr_var.trace_add("write", on_mana_thr_change)
 
+frame_clear_hotkeys = tk.Frame(root, bg=BG)
+frame_clear_hotkeys.pack(fill="x", padx=16, pady=(6, 0))
+flat_btn(frame_clear_hotkeys, "Limpar Hotkeys", _clear_hotkeys, bg="#5d4037").pack(side="right")
+
 # Hint de calibração
 _hint_label = tk.Label(root, text="", bg=BG, fg=YELLOW, font=normal_font)
 _hint_label.pack(pady=(8, 0))
 
 separator(root)
 
-# ── Waypoints
-section_label(root, "🗺  Waypoints")
+# ── Loot
+section_label_with_check(root, "💰  Loot (gold)", loot_enabled_var)
+calib_row(root, "Calibrar área de loot", "loot_area", "loot")
 
-frame_wp_top = tk.Frame(root, bg=BG)
-frame_wp_top.pack(fill="x", padx=16, pady=(2, 0))
-_wp_count_label = tk.Label(frame_wp_top, text="0 waypoint(s)", bg=BG, fg=MUTED, font=normal_font)
-_wp_count_label.pack(side="left")
-_update_wp_label()
-flat_btn(frame_wp_top, "Limpar", _clear_waypoints, bg="#37474f").pack(side="right")
-_wp_record_btn = flat_btn(frame_wp_top, "Gravar Waypoint", _toggle_wp_record, bg="#37474f")
-_wp_record_btn.pack(side="right", padx=(0, 6))
+separator(root)
 
-frame_wp_cfg = tk.Frame(root, bg=BG)
-frame_wp_cfg.pack(fill="x", padx=16, pady=(6, 0))
+# ── Minimapa
+section_label(root, "🗺  Minimapa")
+calib_row(root, "Calibrar Minimapa", "minimap", "mm")
 
-tk.Label(frame_wp_cfg, text="Walk delay:", bg=BG, fg=FG, font=normal_font).pack(side="left")
+frame_mm_cfg = tk.Frame(root, bg=BG)
+frame_mm_cfg.pack(fill="x", padx=16, pady=(6, 0))
+
+tk.Label(frame_mm_cfg, text="Walk delay:", bg=BG, fg=FG, font=normal_font).pack(side="left")
 walk_delay_var = tk.StringVar(value=str(config.get("walk_delay", 2.0)))
-walk_delay_entry = tk.Entry(frame_wp_cfg, textvariable=walk_delay_var, width=4,
+walk_delay_entry = tk.Entry(frame_mm_cfg, textvariable=walk_delay_var, width=4,
                             bg="#2d2d2d", fg="white", insertbackground="white",
                             relief="flat", font=normal_font, justify="center")
 walk_delay_entry.pack(side="left", padx=(6, 2))
-tk.Label(frame_wp_cfg, text="s", bg=BG, fg=FG, font=normal_font).pack(side="left", padx=(0, 12))
+tk.Label(frame_mm_cfg, text="s", bg=BG, fg=FG, font=normal_font).pack(side="left", padx=(0, 12))
 
-tk.Label(frame_wp_cfg, text="Tile size:", bg=BG, fg=FG, font=normal_font).pack(side="left")
-tile_size_var = tk.StringVar(value=str(config.get("tile_size", 32)))
-tile_size_entry = tk.Entry(frame_wp_cfg, textvariable=tile_size_var, width=4,
-                           bg="#2d2d2d", fg="white", insertbackground="white",
-                           relief="flat", font=normal_font, justify="center")
-tile_size_entry.pack(side="left", padx=(6, 2))
-tk.Label(frame_wp_cfg, text="px", bg=BG, fg=FG, font=normal_font).pack(side="left", padx=(0, 12))
-
-tk.Label(frame_wp_cfg, text="Raio:", bg=BG, fg=FG, font=normal_font).pack(side="left")
-explore_radius_var = tk.StringVar(value=str(config.get("explore_radius", 4)))
-explore_radius_entry = tk.Entry(frame_wp_cfg, textvariable=explore_radius_var, width=4,
-                                bg="#2d2d2d", fg="white", insertbackground="white",
-                                relief="flat", font=normal_font, justify="center")
-explore_radius_entry.pack(side="left", padx=(6, 2))
-tk.Label(frame_wp_cfg, text="tiles", bg=BG, fg=FG, font=normal_font).pack(side="left")
+tk.Label(frame_mm_cfg, text="Brilho mín.:", bg=BG, fg=FG, font=normal_font).pack(side="left")
+mm_brightness_var = tk.StringVar(value=str(config.get("minimap_floor_brightness", 40)))
+mm_brightness_entry = tk.Entry(frame_mm_cfg, textvariable=mm_brightness_var, width=4,
+                               bg="#2d2d2d", fg="white", insertbackground="white",
+                               relief="flat", font=normal_font, justify="center")
+mm_brightness_entry.pack(side="left", padx=(6, 2))
 
 def on_walk_delay_change(*_):
     try:
@@ -689,25 +887,16 @@ def on_walk_delay_change(*_):
     except ValueError:
         pass
 
-def on_tile_size_change(*_):
+def on_mm_brightness_change(*_):
     try:
-        val = int(tile_size_var.get())
-        config["tile_size"] = max(8, min(64, val))
-        save_config()
-    except ValueError:
-        pass
-
-def on_explore_radius_change(*_):
-    try:
-        val = int(explore_radius_var.get())
-        config["explore_radius"] = max(1, min(10, val))
+        val = int(mm_brightness_var.get())
+        config["minimap_floor_brightness"] = max(10, min(200, val))
         save_config()
     except ValueError:
         pass
 
 walk_delay_var.trace_add("write", on_walk_delay_change)
-tile_size_var.trace_add("write", on_tile_size_change)
-explore_radius_var.trace_add("write", on_explore_radius_change)
+mm_brightness_var.trace_add("write", on_mm_brightness_change)
 
 separator(root)
 

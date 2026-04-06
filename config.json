@@ -1,7 +1,7 @@
 {
   "food_key": "f5",
   "heal_key": "f1",
-  "attack_key": "f2",
+  "attack_key": "",
   "heal_threshold": 60,
   "hp_bar": {
     "x": 10.0,
@@ -39,14 +39,14 @@
   "attack_delay": 0.8,
   "scan_interval": 0.4,
   "battle_list": {
-    "x": 1627.0,
-    "y": 474.0,
-    "width": 159.0,
-    "height": 164.0
+    "x": 1629.0,
+    "y": 476.0,
+    "width": 156.0,
+    "height": 158.0
   },
-  "heal_spell": "f1",
-  "heal_potion": "f3",
-  "mana_potion": "f4",
+  "heal_spell": "",
+  "heal_potion": "",
+  "mana_potion": "",
   "mana_bar": {
     "x": 813.0,
     "y": 69.0,
@@ -103,5 +103,43 @@
     "height": 28.0
   },
   "waypoints_rel": [],
-  "explore_radius": 10
+  "explore_radius": 10,
+  "heal_enabled": false,
+  "mana_enabled": false,
+  "attack_enabled": true,
+  "minimap": {
+    "x": 1635.0,
+    "y": 76.0,
+    "width": 104.0,
+    "height": 105.0
+  },
+  "minimap_waypoints": [
+    {
+      "dx": 52.0,
+      "dy": 48.0
+    },
+    {
+      "dx": 49.0,
+      "dy": 9.0
+    },
+    {
+      "dx": 50.0,
+      "dy": 1.0
+    },
+    {
+      "dx": 52.0,
+      "dy": 56.0
+    },
+    {
+      "dx": 51.0,
+      "dy": 84.0
+    }
+  ],
+  "loot_area": {
+    "x": 1628.0,
+    "y": 933.0,
+    "width": 166.0,
+    "height": 231.0
+  },
+  "loot_enabled": true
 }
