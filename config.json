@@ -1,0 +1,107 @@
+{
+  "food_key": "f5",
+  "heal_key": "f1",
+  "attack_key": "f2",
+  "heal_threshold": 60,
+  "hp_bar": {
+    "x": 10.0,
+    "y": 69.0,
+    "width": 802.0,
+    "height": 19.0
+  },
+  "calibrated": true,
+  "waypoints": [
+    {
+      "x": 729.0,
+      "y": 403.0
+    },
+    {
+      "x": 741.0,
+      "y": 213.0
+    },
+    {
+      "x": 982.0,
+      "y": 231.0
+    },
+    {
+      "x": 928.0,
+      "y": 429.0
+    }
+  ],
+  "game_area": {
+    "x": 273.0,
+    "y": 154.0,
+    "width": 1062.0,
+    "height": 753.0
+  },
+  "game_area_calibrated": true,
+  "walk_delay": 1.5,
+  "attack_delay": 0.8,
+  "scan_interval": 0.4,
+  "battle_list": {
+    "x": 1627.0,
+    "y": 474.0,
+    "width": 159.0,
+    "height": 164.0
+  },
+  "heal_spell": "f1",
+  "heal_potion": "f3",
+  "mana_potion": "f4",
+  "mana_bar": {
+    "x": 813.0,
+    "y": 69.0,
+    "width": 801.0,
+    "height": 15.0
+  },
+  "attack_icon": {
+    "x": 57.0,
+    "y": 1019.0,
+    "width": 32.0,
+    "height": 31.0
+  },
+  "heal_spell_icon": {
+    "x": 20.0,
+    "y": 1019.0,
+    "width": 32.0,
+    "height": 31.0
+  },
+  "heal_potion_icon": {
+    "x": 93.0,
+    "y": 1021.0,
+    "width": 31.0,
+    "height": 29.0
+  },
+  "mana_potion_icon": {
+    "x": 131.0,
+    "y": 1021.0,
+    "width": 31.0,
+    "height": 30.0
+  },
+  "mana_threshold": 20,
+  "mana_current": {
+    "x": 1180.0,
+    "y": 70.0,
+    "width": 30.0,
+    "height": 16.0
+  },
+  "mana_max": {
+    "x": 1215.0,
+    "y": 63.0,
+    "width": 31.0,
+    "height": 28.0
+  },
+  "hp_max": {
+    "x": 415.0,
+    "y": 57.0,
+    "width": 26.0,
+    "height": 33.0
+  },
+  "hp_current": {
+    "x": 367.0,
+    "y": 65.0,
+    "width": 79.0,
+    "height": 28.0
+  },
+  "waypoints_rel": [],
+  "explore_radius": 10
+}
