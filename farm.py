@@ -159,11 +159,21 @@ def has_mana_calibration():
 
 # ─── Attack ───────────────────────────────────────────────────────────────────
 
-def is_attacking():
-    """Mantido por compatibilidade — não usar para detecção por cor.
-    A detecção por cor falha com criaturas que têm sprites vermelhas (ex: spider).
-    O estado de ataque é agora rastreado internamente via last_click."""
-    return False
+def is_enemy_selected():
+    """Retorna True se há um quadrado vermelho de seleção na battle list (inimigo já atacado)."""
+    bl = config.get("battle_list")
+    if not bl:
+        return False
+    # Verifica apenas a coluna do ícone (primeiros ~32px de largura)
+    icon_w = min(32, int(bl["width"]))
+    img = _grab({"left": int(bl["x"]), "top": int(bl["y"]),
+                 "width": icon_w, "height": int(bl["height"])})
+    r = img[:, :, 2].astype(np.int32)
+    g = img[:, :, 1].astype(np.int32)
+    b = img[:, :, 0].astype(np.int32)
+    # Quadrado vermelho: R alto, G e B baixos
+    red_mask = (r > 160) & (g < 60) & (b < 60)
+    return int(red_mask.sum()) >= 8
 
 def find_enemy():
     bl = config.get("battle_list")
@@ -422,11 +432,11 @@ HEAL_THRESHOLD = 90
 
 
 def run():
-    last_click     = 0.0
-    last_mana_pot  = 0.0
-    last_walk      = 0.0
-    CLICK_COOLDOWN = 1.5
-    MANA_COOLDOWN  = 8.0
+    last_click        = 0.0
+    last_mana_pot     = 0.0
+    last_walk         = 0.0
+    MANA_COOLDOWN     = 8.0
+
 
     in_combat        = False
     last_enemy_seen  = 0.0   # timestamp da última vez que vimos um inimigo
@@ -478,47 +488,44 @@ def run():
 
         prev_frame = curr_frame
 
-        # ── Attack + estado de combate
+        # ── Attack: se tem inimigo na battle list, clica e ataca. Senão, caminha.
         if attack_enabled_var.get():
             enemy = find_enemy()
         else:
             enemy = None
 
-        COMBAT_LINGER = 2.0   # segundos sem ver inimigo para declarar combate encerrado
-
         if enemy:
             last_enemy_seen = now
+
             if not in_combat:
                 in_combat  = True
                 move_log   = []
                 prev_frame = curr_frame
 
-            if now - last_click >= CLICK_COOLDOWN:
+            # Clica só se não há seleção ativa (quadrado vermelho ausente)
+            if not is_enemy_selected():
                 click_enemy(*enemy)
                 last_click = now
-            else:
-                attack_key = config.get("attack_key", "").strip()
-                if attack_key and is_ready("attack_icon"):
-                    press_key(attack_key)
+
+            attack_key = config.get("attack_key", "").strip()
+            if attack_key and is_ready("attack_icon"):
+                press_key(attack_key)
             time.sleep(0.15)
 
         else:
-            # Só declara fim de combate após COMBAT_LINGER segundos sem ver inimigo.
-            # Evita que um falso negativo de find_enemy() faça o bot andar no meio da luta.
-            combat_over = in_combat and (now - last_enemy_seen >= COMBAT_LINGER)
-
-            if combat_over:
-                in_combat  = False
+            # Sem inimigo por 1s → considera morto, faz loot e retrace
+            if in_combat and (now - last_enemy_seen >= 1.0):
+                in_combat = False
                 if loot_enabled_var.get():
                     loot_corpses()
-                tile_size  = config.get("tile_size", 32)
+                tile_size = config.get("tile_size", 32)
                 retrace_path(move_log, tile_size)
                 move_log   = []
                 prev_frame = None
 
-            # Só anda se não estiver em combate
-            if not in_combat:
-                # Detectar trava: se passou o walk_delay e não moveu, forçar novo clique
+            # Só anda se não há inimigo (confirma com segunda leitura)
+            if not in_combat and not find_enemy():
+                # Detectar trava: se passou o walk_delay e não moveu, reseta
                 if last_walk_frame is not None and curr_frame is not None:
                     tile_size = config.get("tile_size", 32)
                     fdx, fdy  = detect_tile_shift(last_walk_frame, curr_frame, tile_size)
@@ -526,7 +533,6 @@ def run():
                         last_walk = 0.0
                         last_walk_frame = None
 
-                # ── Andar: BFS no minimapa para tile andável aleatório
                 walk_delay = config.get("walk_delay", 2.0)
                 if now - last_walk >= walk_delay:
                     target = find_minimap_target()

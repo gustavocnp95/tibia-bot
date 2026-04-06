@@ -136,10 +136,11 @@
     }
   ],
   "loot_area": {
-    "x": 1628.0,
-    "y": 933.0,
-    "width": 166.0,
-    "height": 231.0
+    "x": 1625.0,
+    "y": 894.0,
+    "width": 169.0,
+    "height": 270.0
   },
-  "loot_enabled": true
+  "loot_enabled": true,
+  "minimap_floor_brightness": 10
 }
