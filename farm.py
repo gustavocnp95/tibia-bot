@@ -283,145 +283,6 @@ def find_minimap_target():
     return int(mm["x"]) + px, int(mm["y"]) + py
 
 
-# ─── Loot ────────────────────────────────────────────────────────────────────
-
-def _find_sparkle_corpses():
-    """Retorna lista de (screen_x, screen_y) de tiles com sparkle branco (loot disponível)."""
-    ga = config.get("game_area")
-    if not ga:
-        return []
-    img = _grab(_region("game_area"))
-    # Sparkle = pixels bem brancos/prata em fundo escuro
-    b = img[:, :, 0].astype(np.int32)
-    g = img[:, :, 1].astype(np.int32)
-    r = img[:, :, 2].astype(np.int32)
-    bright = (r > 210) & (g > 210) & (b > 210)
-    tile = config.get("tile_size", 32)
-    h, w = img.shape[:2]
-    positions = []
-    for row in range(0, h, tile):
-        for col in range(0, w, tile):
-            if int(np.sum(bright[row:row + tile, col:col + tile])) >= 8:
-                sx = int(ga["x"]) + col + tile // 2
-                sy = int(ga["y"]) + row + tile // 2
-                positions.append((sx, sy))
-    return positions
-
-
-def _gold_mask(img):
-    """Máscara BGR dos pixels amarelo-dourados de gold coins."""
-    r = img[:, :, 2].astype(np.int32)
-    g = img[:, :, 1].astype(np.int32)
-    b = img[:, :, 0].astype(np.int32)
-    # Gold: R alto, G médio-alto, B baixo  (amarelo-laranja)
-    return (r > 160) & (g > 100) & (b < 70) & (r > g + 30) & (r > b + 100)
-
-
-def _collect_gold_from_area():
-    """Ctrl+clica em cada célula 32×32 da loot_area que tem pixels dourados."""
-    reg = _region("loot_area")
-    if not reg:
-        return
-    img = _grab(reg)
-    mask = _gold_mask(img)
-    if int(np.sum(mask)) == 0:
-        return
-    cell = 32
-    h, w = img.shape[:2]
-    for row in range(0, h, cell):
-        for col in range(0, w, cell):
-            if np.sum(mask[row:row + cell, col:col + cell]) > 8:
-                px = int(reg["left"]) + col + cell // 2
-                py = int(reg["top"])  + row + cell // 2
-                prev = mse.position
-                kbd.press(Key.ctrl)
-                time.sleep(0.05)
-                mse.position = (px, py)
-                time.sleep(0.05)
-                mse.click(Button.left)
-                time.sleep(0.05)
-                kbd.release(Key.ctrl)
-                mse.position = prev
-                time.sleep(0.35)
-                # Re-capturar imagem para pegar próximo item atualizado
-                img  = _grab(reg)
-                mask = _gold_mask(img)
-
-
-def _close_loot_containers():
-    """Fecha todos os containers na loot_area clicando nos botões X.
-    Escaneia da esquerda pra direita e de cima pra baixo procurando
-    o padrão do botão X (pixel escuro rodeado de claro no topo-direito
-    de cada janela de container)."""
-    reg = _region("loot_area")
-    if not reg:
-        return
-    img      = _grab(reg)
-    h, w     = img.shape[:2]
-    # Percorre em busca de linhas de header de container:
-    # headers costumam ser ~20px de altura com cor média (marrom/cinza)
-    # e ficam no topo de cada container empilhado.
-    scan_y       = 0
-    header_h     = 20
-    min_gap      = 30    # mínimo de pixels entre dois headers clicados
-    last_click_y = -999
-    while scan_y < h - header_h:
-        strip    = img[scan_y: scan_y + header_h, :, :]
-        mean_lum = float(np.mean(strip[:, :, :3]))
-        # Header de container: não totalmente escuro, não totalmente branco
-        if 35 < mean_lum < 150 and (scan_y - last_click_y) > min_gap:
-            # O X fica perto da borda direita, no meio vertical do header
-            x_px = int(reg["left"]) + w - 8
-            y_px = int(reg["top"])  + scan_y + header_h // 2
-            prev = mse.position
-            mse.position = (x_px, y_px)
-            time.sleep(0.05)
-            mse.click(Button.left)
-            mse.position = prev
-            time.sleep(0.15)
-            last_click_y = scan_y
-            scan_y      += header_h
-        else:
-            scan_y += 2
-
-
-def loot_corpses():
-    """Detecta cadáveres brilhando → abre → coleta gold → fecha containers."""
-    ga = config.get("game_area")
-    if not ga or not config.get("loot_area"):
-        return
-
-    # 1. Achar tiles com sparkle (corpos com loot)
-    targets = _find_sparkle_corpses()
-
-    # Fallback: se não achou sparkle, tenta tiles ao redor do centro
-    if not targets:
-        cx    = int(ga["x"]) + int(ga["width"])  // 2
-        cy    = int(ga["y"]) + int(ga["height"]) // 2
-        tile  = config.get("tile_size", 32)
-        offsets = [
-            (0,0),(0,-1),(0,1),(-1,0),(1,0),
-            (-1,-1),(1,-1),(-1,1),(1,1),
-        ]
-        targets = [(cx + dx*tile, cy + dy*tile) for dx, dy in offsets]
-
-    # 2. Para cada cadáver: abrir, coletar gold
-    for tx, ty in targets:
-        prev = mse.position
-        mse.position = (tx, ty)
-        time.sleep(0.05)
-        mse.click(Button.left)
-        time.sleep(0.1)
-        mse.click(Button.left)   # double-click abre o cadáver
-        mse.position = prev
-        time.sleep(0.6)          # aguarda container aparecer
-        _collect_gold_from_area()
-        time.sleep(0.15)
-
-    # 3. Fechar todos os containers abertos
-    if targets:
-        time.sleep(0.2)
-        _close_loot_containers()
 
 
 # ─── Loop principal ───────────────────────────────────────────────────────────
@@ -513,11 +374,9 @@ def run():
             time.sleep(0.15)
 
         else:
-            # Sem inimigo por 1s → considera morto, faz loot e retrace
+            # Sem inimigo por 1s → considera morto, faz retrace
             if in_combat and (now - last_enemy_seen >= 1.0):
                 in_combat = False
-                if loot_enabled_var.get():
-                    loot_corpses()
                 tile_size = config.get("tile_size", 32)
                 retrace_path(move_log, tile_size)
                 move_log   = []
@@ -565,7 +424,6 @@ CALIB_PAIRS = {
     "mi_icon":  "mana_potion_icon",
     "atk_icon": "attack_icon",
     "mm":       "minimap",
-    "loot":     "loot_area",
 }
 
 
@@ -649,13 +507,11 @@ root.resizable(False, False)
 heal_enabled_var   = tk.BooleanVar(value=config.get("heal_enabled",   True))
 mana_enabled_var   = tk.BooleanVar(value=config.get("mana_enabled",   True))
 attack_enabled_var = tk.BooleanVar(value=config.get("attack_enabled", True))
-loot_enabled_var   = tk.BooleanVar(value=config.get("loot_enabled",   False))
 
 def on_section_toggle():
     config["heal_enabled"]   = heal_enabled_var.get()
     config["mana_enabled"]   = mana_enabled_var.get()
     config["attack_enabled"] = attack_enabled_var.get()
-    config["loot_enabled"]   = loot_enabled_var.get()
     save_config()
 
 title_font   = tkfont.Font(family="Helvetica", size=13, weight="bold")
@@ -854,12 +710,6 @@ flat_btn(frame_clear_hotkeys, "Limpar Hotkeys", _clear_hotkeys, bg="#5d4037").pa
 # Hint de calibração
 _hint_label = tk.Label(root, text="", bg=BG, fg=YELLOW, font=normal_font)
 _hint_label.pack(pady=(8, 0))
-
-separator(root)
-
-# ── Loot
-section_label_with_check(root, "💰  Loot (gold)", loot_enabled_var)
-calib_row(root, "Calibrar área de loot", "loot_area", "loot")
 
 separator(root)
 
