@@ -297,20 +297,30 @@ def _slot_is_empty(patch):
 
 
 def _slot_has_gold(patch):
-    """True se o slot contem pixels amarelo/dourado de gold coin."""
+    """True se o slot contem pixels amarelo/dourado de gold coin.
+    Gold = amarelo (R e G proximos). Laranja (food) = R muito maior que G."""
     r = patch[:, :, 2].astype(np.int32)
     g = patch[:, :, 1].astype(np.int32)
     b = patch[:, :, 0].astype(np.int32)
-    gold_mask = (r > 150) & (g > 120) & (b < 80) & (r > b + 80) & (g > b + 50)
+    gold_mask = (
+        (r > 150) & (g > 120) & (b < 80) &
+        (r > b + 80) & (g > b + 50) &
+        ((r - g) < 50)  # amarelo: R e G proximos; laranja: R >> G
+    )
     return int(gold_mask.sum()) >= 10
 
 
 def hover_backpack_slots():
-    """Passa o mouse em cada slot da backpack, 1 segundo por slot (debug)."""
+    """Passa o mouse em cada slot da backpack (1s debug), dropa o que nao for gold."""
     reg = _region("backpack")
     bp = config.get("backpack")
-    if not reg or not bp:
+    ga = config.get("game_area")
+    if not reg or not bp or not ga:
         return
+
+    dst_x = int(ga["x"]) + int(ga["width"]) // 2
+    dst_y = int(ga["y"]) + int(ga["height"]) // 2
+
     img = _grab(reg)
     h, w = img.shape[:2]
     slot_w = w // BP_COLS
@@ -319,10 +329,28 @@ def hover_backpack_slots():
 
     for r in range(rows):
         for c in range(BP_COLS):
+            # Re-capturar a cada slot pq itens deslocam ao dropar
+            img = _grab(reg)
+            patch = img[r*slot_h:(r+1)*slot_h, c*slot_w:(c+1)*slot_w]
+
+            if _slot_is_empty(patch):
+                return  # vazio = nao tem mais nada depois
+
             sx = int(bp["x"]) + c * slot_w + slot_w // 2
             sy = int(bp["y"]) + r * slot_h + slot_h // 2
             mse.position = (sx, sy)
-            time.sleep(1.0)
+            time.sleep(1.0)  # debug: 1s por slot
+
+            if _slot_has_gold(patch):
+                continue
+
+            # Nao e gold → arrastar pro chao
+            mse.press(Button.left)
+            time.sleep(0.1)
+            mse.position = (dst_x, dst_y)
+            time.sleep(0.1)
+            mse.release(Button.left)
+            time.sleep(0.3)
 
 
 
