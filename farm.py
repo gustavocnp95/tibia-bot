@@ -285,6 +285,47 @@ def find_minimap_target():
 
 
 
+# ─── Loot filter: manter apenas gold ─────────────────────────────────────────
+
+BP_COLS = 4  # backpack do Tibia sempre tem 4 colunas
+
+def _slot_is_empty(patch):
+    """True se o slot esta vazio (fundo cinza escuro uniforme)."""
+    brightness = np.mean(patch[:, :, :3].astype(np.float32))
+    std = np.std(patch[:, :, :3].astype(np.float32))
+    return brightness < 80 and std < 20
+
+
+def _slot_has_gold(patch):
+    """True se o slot contem pixels amarelo/dourado de gold coin."""
+    r = patch[:, :, 2].astype(np.int32)
+    g = patch[:, :, 1].astype(np.int32)
+    b = patch[:, :, 0].astype(np.int32)
+    gold_mask = (r > 150) & (g > 120) & (b < 80) & (r > b + 80) & (g > b + 50)
+    return int(gold_mask.sum()) >= 10
+
+
+def hover_backpack_slots():
+    """Passa o mouse em cada slot da backpack, 1 segundo por slot (debug)."""
+    reg = _region("backpack")
+    bp = config.get("backpack")
+    if not reg or not bp:
+        return
+    img = _grab(reg)
+    h, w = img.shape[:2]
+    slot_w = w // BP_COLS
+    slot_h = slot_w  # slots sao quadrados
+    rows = h // slot_h
+
+    for r in range(rows):
+        for c in range(BP_COLS):
+            sx = int(bp["x"]) + c * slot_w + slot_w // 2
+            sy = int(bp["y"]) + r * slot_h + slot_h // 2
+            mse.position = (sx, sy)
+            time.sleep(1.0)
+
+
+
 # ─── Loop principal ───────────────────────────────────────────────────────────
 
 running = False
@@ -300,6 +341,7 @@ def run():
 
 
     in_combat        = False
+    was_attacking    = False  # True se no tick anterior tinha selecao vermelha
     last_enemy_seen  = 0.0   # timestamp da última vez que vimos um inimigo
     move_log         = []   # lista de (char_dx, char_dy) em tiles
     prev_frame       = None
@@ -355,7 +397,27 @@ def run():
         else:
             enemy = None
 
-        if enemy:
+        currently_attacking = is_enemy_selected()
+
+        # ── Detectar morte do bicho atacado: tinha selecao e perdeu
+        just_looted = False
+        if was_attacking and not currently_attacking and in_combat:
+            # Quick loot (Option+Q) no corpo do bicho
+            kbd.press(Key.alt)
+            time.sleep(0.05)
+            kbd.press('q')
+            time.sleep(0.05)
+            kbd.release('q')
+            kbd.release(Key.alt)
+            time.sleep(0.5)
+
+            # Hover em cada slot da backpack (debug)
+            hover_backpack_slots()
+            just_looted = True
+
+        was_attacking = currently_attacking
+
+        if enemy and not just_looted:
             last_enemy_seen = now
 
             if not in_combat:
@@ -364,7 +426,7 @@ def run():
                 prev_frame = curr_frame
 
             # Clica só se não há seleção ativa (quadrado vermelho ausente)
-            if not is_enemy_selected():
+            if not currently_attacking:
                 click_enemy(*enemy)
                 last_click = now
 
@@ -374,7 +436,7 @@ def run():
             time.sleep(0.15)
 
         else:
-            # Sem inimigo por 1s → considera morto, faz retrace
+            # Sem inimigo por 1s → fim do combate, faz retrace
             if in_combat and (now - last_enemy_seen >= 1.0):
                 in_combat = False
                 tile_size = config.get("tile_size", 32)
@@ -424,6 +486,7 @@ CALIB_PAIRS = {
     "mi_icon":  "mana_potion_icon",
     "atk_icon": "attack_icon",
     "mm":       "minimap",
+    "bp":       "backpack",
 }
 
 
@@ -657,6 +720,7 @@ separator(root)
 section_label_with_check(root, "⚔  Attack", attack_enabled_var)
 calib_row(root, "Calibrar", "battle_list", "bl")
 key_row(root, "Tecla de ataque:", "attack_key", "attack_icon", "atk_icon")
+calib_row(root, "Calibrar Backpack", "backpack", "bp")
 
 separator(root)
 

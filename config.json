@@ -135,5 +135,11 @@
       "dy": 84.0
     }
   ],
-  "minimap_floor_brightness": 10
+  "minimap_floor_brightness": 10,
+  "backpack": {
+    "x": 1637.0,
+    "y": 660.0,
+    "width": 144.0,
+    "height": 182.0
+  }
 }
