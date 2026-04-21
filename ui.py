@@ -126,7 +126,24 @@ class App:
         self._refresh()
 
     def _add_marker(self):
-        messagebox.showinfo("TODO", "Será implementado na Task 9")
+        self.log("adicione marker: clique na posição da tela")
+        self.root.withdraw()
+
+        def on_click(x, y, button, pressed):
+            if not pressed:
+                return
+            self.root.after(0, lambda: self._finish_add_marker(x, y))
+            return False
+
+        listener = pynput_mouse.Listener(on_click=on_click)
+        listener.start()
+
+    def _finish_add_marker(self, x, y):
+        self.root.deiconify()
+        self.cfg.setdefault("markers", []).append({"x": x, "y": y})
+        save_config(self.cfg)
+        self.log(f"marker adicionado: ({x}, {y})")
+        self._refresh()
 
     def _remove_marker(self):
         idx = self.markers_list.curselection()
