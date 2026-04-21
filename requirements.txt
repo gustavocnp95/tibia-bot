@@ -1,5 +1,5 @@
 pynput
 mss
 numpy
-pytesseract
 Pillow
+pytest
