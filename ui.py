@@ -91,7 +91,39 @@ class App:
 
     # ── placeholders (implementados nas próximas tasks)
     def _calibrate_battle_list(self):
-        messagebox.showinfo("TODO", "Será implementado na Task 8")
+        self.log("calibrando battle list: clique no canto SUPERIOR-ESQUERDO")
+        self.root.withdraw()
+        self._capture_two_clicks(self._finish_battle_list_calibration)
+
+    def _capture_two_clicks(self, on_done):
+        """Captura duas posições do mouse em sequência."""
+        clicks = []
+
+        def on_click(x, y, button, pressed):
+            if not pressed:
+                return
+            clicks.append((x, y))
+            if len(clicks) == 1:
+                self.root.after(0, self.log,
+                                "agora clique no canto INFERIOR-DIREITO")
+            elif len(clicks) == 2:
+                self.root.after(0, lambda: (self.root.deiconify(),
+                                            on_done(clicks)))
+                return False  # stop listener
+
+        listener = pynput_mouse.Listener(on_click=on_click)
+        listener.start()
+
+    def _finish_battle_list_calibration(self, clicks):
+        (x1, y1), (x2, y2) = clicks
+        x = min(x1, x2)
+        y = min(y1, y2)
+        w = abs(x2 - x1)
+        h = abs(y2 - y1)
+        self.cfg["battle_list"] = {"x": x, "y": y, "width": w, "height": h}
+        save_config(self.cfg)
+        self.log(f"battle list calibrada: x={x} y={y} w={w} h={h}")
+        self._refresh()
 
     def _add_marker(self):
         messagebox.showinfo("TODO", "Será implementado na Task 9")
