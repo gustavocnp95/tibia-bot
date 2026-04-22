@@ -61,38 +61,20 @@ def test_is_attacking_false_on_orange_flame_sprites():
 def _minimap_bgra(h=100, w=100):
     img = np.zeros((h, w, 4), dtype=np.uint8)
     img[:, :, 3] = 255
-    # fundo "grama" verde escuro/olive (não deve ser detectado)
-    img[:, :, 1] = 90   # G moderado
-    img[:, :, 2] = 50   # R baixo
-    img[:, :, 0] = 30   # B baixo
+    # cinza neutro, como chão do minimap Tibia
+    img[:, :, 0] = 102
+    img[:, :, 1] = 102
+    img[:, :, 2] = 102
     return img
 
 
-def _paint_green_check(img, cx, cy, size=3):
-    """Pinta pixels verde-neon (G=230, R=20, B=20)."""
+def _paint_marker(img, cx, cy, size=5):
+    """Pinta pixels da cor do traço do ✓ (verde-oliva: R=70, G=160, B=70)
+    formando um bloco size×size — cobre o min_size=15 do detector."""
     half = size // 2
-    img[cy - half:cy + half + 1, cx - half:cx + half + 1, 0] = 20
-    img[cy - half:cy + half + 1, cx - half:cx + half + 1, 1] = 230
-    img[cy - half:cy + half + 1, cx - half:cx + half + 1, 2] = 20
-
-
-def _paint_red_ring(img, cx, cy, radius=5):
-    """Pinta borda/ring vermelho ao redor (R=200, G=30, B=30)."""
-    for dx in range(-radius, radius + 1):
-        for dy in range(-radius, radius + 1):
-            # apenas anel: distância ~ radius
-            d = (dx * dx + dy * dy) ** 0.5
-            if radius - 1.5 <= d <= radius + 0.5:
-                y, x = cy + dy, cx + dx
-                if 0 <= y < img.shape[0] and 0 <= x < img.shape[1]:
-                    img[y, x, 0] = 30
-                    img[y, x, 1] = 30
-                    img[y, x, 2] = 200
-
-
-def _paint_marker(img, cx, cy):
-    _paint_green_check(img, cx, cy, size=3)
-    _paint_red_ring(img, cx, cy, radius=5)
+    img[cy - half:cy + half + 1, cx - half:cx + half + 1, 0] = 70   # B
+    img[cy - half:cy + half + 1, cx - half:cx + half + 1, 1] = 160  # G
+    img[cy - half:cy + half + 1, cx - half:cx + half + 1, 2] = 70   # R
 
 
 def test_find_markers_empty_on_blank_minimap():
@@ -119,32 +101,34 @@ def test_find_markers_detects_multiple_markers():
 
 
 def test_find_markers_ignores_dark_olive_grass():
-    """Grama/verde escuro do minimap não deve virar marker."""
+    """Grama/verde escuro uniforme do minimap não deve virar marker."""
     img = _minimap_bgra()
     img[10:80, 10:80, 1] = 130
     img[10:80, 10:80, 2] = 40
     assert find_green_check_markers(img) == []
 
 
-def test_find_markers_ignores_bright_green_without_red_ring():
-    """Verde neon SEM vermelho ao redor (ex: tile de grama muito iluminado)
-    não deve virar marker — precisa do ring vermelho pra confirmar."""
-    img = _minimap_bgra()
-    _paint_green_check(img, 50, 50, size=4)
-    assert find_green_check_markers(img) == []
-
-
-def test_find_markers_ignores_green_adjacent_to_lava_edge():
-    """Aresta grama-lava: verde com vermelho só em um lado (não ring
-    completo). Não deve virar marker."""
-    img = _minimap_bgra()
-    _paint_green_check(img, 50, 50, size=4)
-    # vermelho tipo lava apenas no lado leste (um dos 4 lados)
-    img[44:56, 56:70, 0] = 30
-    img[44:56, 56:70, 1] = 30
-    img[44:56, 56:70, 2] = 200
-    assert find_green_check_markers(img) == []
-
-
 def test_find_markers_returns_empty_on_none():
     assert find_green_check_markers(None) == []
+
+
+def test_find_markers_ignores_pure_neon_grass():
+    """Grama neon pura (RGB ~0,200,0) é MUITO mais saturada que o traço
+    do ✓ (oliva/teal) — a máscara do check não casa com ela."""
+    img = _minimap_bgra()
+    img[30:70, 30:70, 0] = 0     # B
+    img[30:70, 30:70, 1] = 210   # G
+    img[30:70, 30:70, 2] = 0     # R
+    assert find_green_check_markers(img) == []
+
+
+def test_find_markers_ignores_thin_edge_strip():
+    """Tiras estreitas (ex: anti-aliasing na borda direita do minimap):
+    bbox com largura < min_bbox_dim deve ser rejeitada mesmo se
+    a contagem de pixels bater o min_size."""
+    img = _minimap_bgra()
+    # coluna de 20px altura x 2px largura com a cor do check
+    img[10:30, 98:100, 0] = 70
+    img[10:30, 98:100, 1] = 160
+    img[10:30, 98:100, 2] = 70
+    assert find_green_check_markers(img) == []
