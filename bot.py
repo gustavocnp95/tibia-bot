@@ -10,7 +10,7 @@ import actions as act
 
 class Bot:
     def __init__(self, is_attacking, has_target, press_space, loot, click,
-                 sleep, choose_marker, walk_delay, find_markers):
+                 sleep, choose_marker, walk_delay, find_markers, now=None):
         self._is_attacking = is_attacking
         self._has_target = has_target
         self._press_space = press_space
@@ -20,7 +20,9 @@ class Bot:
         self._choose_marker = choose_marker
         self._walk_delay = walk_delay
         self._find_markers = find_markers
+        self._now = now or time.monotonic
         self.was_attacking = False
+        self._walk_cooldown_until = 0.0
 
     def tick(self):
         if self._is_attacking():
@@ -32,12 +34,18 @@ class Bot:
             self._loot()
             self.was_attacking = False
             self._sleep(0.3)
-            # flui para has_target: se houver remanescente na battle list,
-            # ataca o próximo imediatamente sem esperar outro tick
+            # flui para has_target: ataca o próximo imediatamente se remanescente
 
         if self._has_target():
             self._press_space()
+            self._walk_cooldown_until = 0.0  # cancela o walk pendente
             self._sleep(0.4)
+            return
+
+        # cooldown não-bloqueante do walk — continua ticando rápido pra pegar
+        # alvo que apareça no meio do caminho
+        if self._now() < self._walk_cooldown_until:
+            self._sleep(0.15)
             return
 
         markers = self._find_markers()
@@ -46,7 +54,7 @@ class Bot:
             return
         m = self._choose_marker(markers)
         self._click(m[0], m[1])
-        self._sleep(self._walk_delay())
+        self._walk_cooldown_until = self._now() + self._walk_delay()
 
 
 class BotRunner:
@@ -79,9 +87,20 @@ class BotRunner:
         if not region:
             return []
         img = capture.grab_region(region)
+        if img is None:
+            return []
         local = detection.find_green_check_markers(img)
+        if not local:
+            return []
+        # compensa escala Retina: imagem vem em pixels nativos, mouse usa
+        # coordenadas lógicas
+        img_h, img_w = img.shape[:2]
+        logical_w = max(1, int(region["width"]))
+        logical_h = max(1, int(region["height"]))
+        sx = img_w / logical_w
+        sy = img_h / logical_h
         ox, oy = int(region["x"]), int(region["y"])
-        return [(ox + x, oy + y) for x, y in local]
+        return [(ox + int(x / sx), oy + int(y / sy)) for x, y in local]
 
     def _loop(self):
         bot = Bot(
@@ -95,12 +114,26 @@ class BotRunner:
             walk_delay=self._walk_delay,
             find_markers=self._find_markers,
         )
+        last_heartbeat = 0.0
         while not self._stop.is_set():
             try:
                 bot.tick()
+                now = time.monotonic()
+                if now - last_heartbeat >= 3.0:
+                    self._emit_heartbeat()
+                    last_heartbeat = now
             except Exception as e:
                 self._log(f"erro no tick: {e}")
                 time.sleep(0.5)
+
+    def _emit_heartbeat(self):
+        cfg = self._cfg_provider()
+        bl_img = capture.grab_region(cfg.get("battle_list"))
+        mm_img = capture.grab_region(cfg.get("minimap"))
+        has_t = detection.has_target_in_battle_list(bl_img)
+        is_a = detection.is_attacking(bl_img)
+        n_markers = len(detection.find_green_check_markers(mm_img)) if mm_img is not None else 0
+        self._log(f"[hb] has_target={has_t} is_attacking={is_a} markers={n_markers}")
 
     def start(self):
         if self._thread and self._thread.is_alive():

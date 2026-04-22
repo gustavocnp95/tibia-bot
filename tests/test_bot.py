@@ -117,3 +117,34 @@ def test_does_not_loot_without_prior_attack():
     bot = make_bot(env)
     bot.tick()
     assert ("loot",) not in env.actions
+
+
+def test_walk_cooldown_interrupted_by_new_target():
+    """Durante cooldown pós-walk, se alvo aparecer, ataca no próximo tick."""
+    env = FakeEnv()
+    fake_time = [0.0]
+    bot = Bot(
+        is_attacking=env.is_attacking,
+        has_target=env.has_target_in_battle_list,
+        press_space=env.press_space,
+        loot=env.loot,
+        click=env.click,
+        sleep=env.sleep,
+        choose_marker=env.choose_marker,
+        walk_delay=lambda: 5.0,
+        find_markers=env.find_markers,
+        now=lambda: fake_time[0],
+    )
+    # tick 1: ocioso, clica em marker (cooldown = 5s)
+    bot.tick()
+    assert env.actions == [("click", 100, 200)]
+
+    # tick 2: ainda no cooldown (1s passou), sem alvo → sleep rápido, sem click
+    fake_time[0] = 1.0
+    bot.tick()
+    assert env.actions == [("click", 100, 200)]
+
+    # tick 3: ainda no cooldown, mas apareceu alvo → ataca (interrompe walk)
+    env.has_target = True
+    bot.tick()
+    assert env.actions[-1] == ("space",)

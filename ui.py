@@ -1,8 +1,14 @@
 """UI tkinter para configurar e controlar o bot."""
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+import numpy as np
+from PIL import Image
 from pynput import mouse as pynput_mouse
 
+import capture
+import detection
 from config import load_config, save_config
 from bot import BotRunner
 
@@ -50,6 +56,7 @@ class App:
         self.start_btn.pack(side="left", padx=6)
         self.stop_btn = ttk.Button(ctrl, text="Parar", command=self._stop, state="disabled")
         self.stop_btn.pack(side="left", padx=6)
+        ttk.Button(ctrl, text="Debug snapshot", command=self._debug_snapshot).pack(side="left", padx=6)
 
         log_frame = ttk.LabelFrame(self.root, text="Log")
         log_frame.pack(fill="both", expand=True, **pad)
@@ -133,6 +140,35 @@ class App:
         self.runner.stop()
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
+
+    def _debug_snapshot(self):
+        out_dir = os.path.join(os.getcwd(), "debug")
+        os.makedirs(out_dir, exist_ok=True)
+        self._snapshot_region("battle_list", out_dir)
+        self._snapshot_region("minimap", out_dir)
+
+    def _snapshot_region(self, key, out_dir):
+        region = self.cfg.get(key)
+        if not region:
+            self.log(f"{key}: não calibrada")
+            return
+        img = capture.grab_region(region)
+        if img is None:
+            self.log(f"{key}: captura retornou None")
+            return
+        path = os.path.join(out_dir, f"{key}.png")
+        rgb = img[:, :, [2, 1, 0]]
+        Image.fromarray(rgb.astype(np.uint8)).save(path)
+        green_count = int(detection._green_hp_mask(img).sum())
+        red_count = int(detection._red_attack_mask(img).sum())
+        neon_count = int(detection._green_check_mask(img).sum())
+        markers = detection.find_green_check_markers(img)
+        self.log(f"{key} salvo em {path}")
+        self.log(f"  pixels HP-green={green_count}  attack-red={red_count}  "
+                 f"neon-green={neon_count}  markers={len(markers)}")
+        if key == "battle_list":
+            self.log(f"  has_target={detection.has_target_in_battle_list(img)}  "
+                     f"is_attacking={detection.is_attacking(img)}")
 
 
 def _fmt_region(label, region):
