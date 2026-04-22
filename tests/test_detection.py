@@ -134,5 +134,17 @@ def test_find_markers_ignores_bright_green_without_red_ring():
     assert find_green_check_markers(img) == []
 
 
+def test_find_markers_ignores_green_adjacent_to_lava_edge():
+    """Aresta grama-lava: verde com vermelho só em um lado (não ring
+    completo). Não deve virar marker."""
+    img = _minimap_bgra()
+    _paint_green_check(img, 50, 50, size=4)
+    # vermelho tipo lava apenas no lado leste (um dos 4 lados)
+    img[44:56, 56:70, 0] = 30
+    img[44:56, 56:70, 1] = 30
+    img[44:56, 56:70, 2] = 200
+    assert find_green_check_markers(img) == []
+
+
 def test_find_markers_returns_empty_on_none():
     assert find_green_check_markers(None) == []

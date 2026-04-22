@@ -44,10 +44,33 @@ def is_attacking(bgra):
     return int(_red_attack_mask(bgra).sum()) >= RED_ATTACK_MIN_PIXELS
 
 
-def find_green_check_markers(bgra, min_size=GREEN_MARKER_MIN_SIZE, red_proximity=6):
-    """Retorna (x, y) de cada blob verde-check que tem vermelho (borda do
-    marker) num raio de `red_proximity` pixels. Grama (verde sem vermelho
-    ao redor) é descartada."""
+def _has_red_ring_around(red, cx, cy, inner=3, outer=10, min_sides=3):
+    """True se há pixels vermelhos em >= min_sides dos 4 lados cardinais
+    (estritamente N/S/L/O, sem incluir os cantos) ao redor de (cx, cy).
+    Strips são estreitas (largura = 2*inner+1) pra que uma borda reta
+    vertical só hit um lado, não três."""
+    h, w = red.shape
+
+    def _any(y_lo, y_hi, x_lo, x_hi):
+        y_lo = max(0, y_lo)
+        y_hi = max(0, min(h, y_hi))
+        x_lo = max(0, x_lo)
+        x_hi = max(0, min(w, x_hi))
+        return y_lo < y_hi and x_lo < x_hi and bool(red[y_lo:y_hi, x_lo:x_hi].any())
+
+    sides = [
+        _any(cy - outer, cy - inner, cx - inner, cx + inner + 1),        # norte
+        _any(cy + inner + 1, cy + outer + 1, cx - inner, cx + inner + 1),  # sul
+        _any(cy - inner, cy + inner + 1, cx - outer, cx - inner),        # oeste
+        _any(cy - inner, cy + inner + 1, cx + inner + 1, cx + outer + 1),  # leste
+    ]
+    return sum(sides) >= min_sides
+
+
+def find_green_check_markers(bgra, min_size=GREEN_MARKER_MIN_SIZE):
+    """Retorna (x, y) de cada blob verde-check cercado por ring vermelho
+    (pelo menos 3 dos 4 lados). Grama iluminada e arestas grama-lava
+    são descartadas."""
     if bgra is None:
         return []
     green = _green_check_mask(bgra)
@@ -75,10 +98,6 @@ def find_green_check_markers(bgra, min_size=GREEN_MARKER_MIN_SIZE, red_proximity
             if count < min_size:
                 continue
             cx, cy = sum_x // count, sum_y // count
-            ylo = max(0, cy - red_proximity)
-            yhi = min(h, cy + red_proximity + 1)
-            xlo = max(0, cx - red_proximity)
-            xhi = min(w, cx + red_proximity + 1)
-            if red[ylo:yhi, xlo:xhi].any():
+            if _has_red_ring_around(red, cx, cy):
                 centroids.append((cx, cy))
     return centroids
