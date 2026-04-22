@@ -6,12 +6,11 @@ import time
 import capture
 import detection
 import actions as act
-from config import load_config
 
 
 class Bot:
     def __init__(self, is_attacking, has_target, press_space, loot, click,
-                 sleep, choose_marker, walk_delay, get_markers):
+                 sleep, choose_marker, walk_delay, find_markers):
         self._is_attacking = is_attacking
         self._has_target = has_target
         self._press_space = press_space
@@ -20,7 +19,7 @@ class Bot:
         self._sleep = sleep
         self._choose_marker = choose_marker
         self._walk_delay = walk_delay
-        self._get_markers = get_markers
+        self._find_markers = find_markers
         self.was_attacking = False
 
     def tick(self):
@@ -32,30 +31,29 @@ class Bot:
         if self.was_attacking:
             self._loot()
             self.was_attacking = False
-            self._sleep(0.6)
-            return
+            self._sleep(0.3)
+            # flui para has_target: se houver remanescente na battle list,
+            # ataca o próximo imediatamente sem esperar outro tick
 
         if self._has_target():
             self._press_space()
             self._sleep(0.4)
             return
 
-        markers = self._get_markers()
+        markers = self._find_markers()
         if not markers:
             self._sleep(0.3)
             return
         m = self._choose_marker(markers)
-        self._click(m["x"], m["y"])
+        self._click(m[0], m[1])
         self._sleep(self._walk_delay())
 
-
-# ── Integração com hardware real ─────────────────────────────────────────────
 
 class BotRunner:
     """Roda o Bot em thread dedicada, usando config + captura de tela reais."""
 
     def __init__(self, cfg_provider, log_fn=print):
-        self._cfg_provider = cfg_provider  # callable -> cfg dict atualizado
+        self._cfg_provider = cfg_provider
         self._log = log_fn
         self._thread = None
         self._stop = threading.Event()
@@ -75,8 +73,15 @@ class BotRunner:
         return random.uniform(cfg.get("walk_delay_min", 1.5),
                               cfg.get("walk_delay_max", 3.0))
 
-    def _get_markers(self):
-        return self._cfg_provider().get("markers", [])
+    def _find_markers(self):
+        cfg = self._cfg_provider()
+        region = cfg.get("minimap")
+        if not region:
+            return []
+        img = capture.grab_region(region)
+        local = detection.find_green_check_markers(img)
+        ox, oy = int(region["x"]), int(region["y"])
+        return [(ox + x, oy + y) for x, y in local]
 
     def _loop(self):
         bot = Bot(
@@ -88,7 +93,7 @@ class BotRunner:
             sleep=time.sleep,
             choose_marker=random.choice,
             walk_delay=self._walk_delay,
-            get_markers=self._get_markers,
+            find_markers=self._find_markers,
         )
         while not self._stop.is_set():
             try:

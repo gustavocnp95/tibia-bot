@@ -11,7 +11,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Tibia Bot")
-        self.root.geometry("520x600")
+        self.root.geometry("520x520")
         self.cfg = load_config()
         self.runner = BotRunner(cfg_provider=lambda: self.cfg, log_fn=self.log)
 
@@ -21,29 +21,19 @@ class App:
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
 
-        # ── Regiões calibradas
-        regions_frame = ttk.LabelFrame(self.root, text="Regiões")
+        regions_frame = ttk.LabelFrame(self.root, text="Regiões (calibrar com 2 cliques)")
         regions_frame.pack(fill="x", **pad)
+
         self.battle_list_label = ttk.Label(regions_frame, text="Battle list: -")
         self.battle_list_label.pack(anchor="w", padx=6)
         ttk.Button(regions_frame, text="Calibrar battle list",
                    command=self._calibrate_battle_list).pack(anchor="w", padx=6, pady=2)
 
-        # ── Markers
-        markers_frame = ttk.LabelFrame(self.root, text="Markers (aleatórios)")
-        markers_frame.pack(fill="both", expand=False, **pad)
-        self.markers_list = tk.Listbox(markers_frame, height=8)
-        self.markers_list.pack(fill="x", padx=6, pady=4)
-        btns = ttk.Frame(markers_frame)
-        btns.pack(fill="x")
-        ttk.Button(btns, text="Adicionar marker (clique na tela)",
-                   command=self._add_marker).pack(side="left", padx=6, pady=2)
-        ttk.Button(btns, text="Remover selecionado",
-                   command=self._remove_marker).pack(side="left", padx=6, pady=2)
-        ttk.Button(btns, text="Limpar todos",
-                   command=self._clear_markers).pack(side="left", padx=6, pady=2)
+        self.minimap_label = ttk.Label(regions_frame, text="Minimap: -")
+        self.minimap_label.pack(anchor="w", padx=6, pady=(8, 0))
+        ttk.Button(regions_frame, text="Calibrar minimap",
+                   command=self._calibrate_minimap).pack(anchor="w", padx=6, pady=2)
 
-        # ── Delays
         delay_frame = ttk.LabelFrame(self.root, text="Walk delay (segundos)")
         delay_frame.pack(fill="x", **pad)
         self.delay_min_var = tk.DoubleVar(value=self.cfg["walk_delay_min"])
@@ -54,7 +44,6 @@ class App:
         ttk.Entry(delay_frame, textvariable=self.delay_max_var, width=8).grid(row=0, column=3)
         ttk.Button(delay_frame, text="Salvar", command=self._save_delays).grid(row=0, column=4, padx=6)
 
-        # ── Start/Stop
         ctrl = ttk.Frame(self.root)
         ctrl.pack(fill="x", **pad)
         self.start_btn = ttk.Button(ctrl, text="Iniciar", command=self._start)
@@ -62,23 +51,14 @@ class App:
         self.stop_btn = ttk.Button(ctrl, text="Parar", command=self._stop, state="disabled")
         self.stop_btn.pack(side="left", padx=6)
 
-        # ── Log
         log_frame = ttk.LabelFrame(self.root, text="Log")
         log_frame.pack(fill="both", expand=True, **pad)
-        self.log_text = tk.Text(log_frame, height=12, state="disabled")
+        self.log_text = tk.Text(log_frame, height=14, state="disabled")
         self.log_text.pack(fill="both", expand=True, padx=6, pady=4)
 
     def _refresh(self):
-        bl = self.cfg.get("battle_list")
-        if bl:
-            self.battle_list_label.config(
-                text=f"Battle list: x={bl['x']:.0f} y={bl['y']:.0f} "
-                     f"w={bl['width']:.0f} h={bl['height']:.0f}")
-        else:
-            self.battle_list_label.config(text="Battle list: (não calibrada)")
-        self.markers_list.delete(0, tk.END)
-        for i, m in enumerate(self.cfg.get("markers", [])):
-            self.markers_list.insert(tk.END, f"{i+1}: ({m['x']:.0f}, {m['y']:.0f})")
+        self.battle_list_label.config(text=_fmt_region("Battle list", self.cfg.get("battle_list")))
+        self.minimap_label.config(text=_fmt_region("Minimap", self.cfg.get("minimap")))
 
     def log(self, msg):
         self.root.after(0, self._append_log, str(msg))
@@ -89,14 +69,17 @@ class App:
         self.log_text.see(tk.END)
         self.log_text.config(state="disabled")
 
-    # ── placeholders (implementados nas próximas tasks)
     def _calibrate_battle_list(self):
         self.log("calibrando battle list: clique no canto SUPERIOR-ESQUERDO")
         self.root.withdraw()
-        self._capture_two_clicks(self._finish_battle_list_calibration)
+        self._capture_two_clicks(self._finish_calibration("battle_list"))
+
+    def _calibrate_minimap(self):
+        self.log("calibrando minimap: clique no canto SUPERIOR-ESQUERDO")
+        self.root.withdraw()
+        self._capture_two_clicks(self._finish_calibration("minimap"))
 
     def _capture_two_clicks(self, on_done):
-        """Captura duas posições do mouse em sequência."""
         clicks = []
 
         def on_click(x, y, button, pressed):
@@ -109,54 +92,25 @@ class App:
             elif len(clicks) == 2:
                 self.root.after(0, lambda: (self.root.deiconify(),
                                             on_done(clicks)))
-                return False  # stop listener
+                return False
 
         listener = pynput_mouse.Listener(on_click=on_click)
         listener.start()
 
-    def _finish_battle_list_calibration(self, clicks):
-        (x1, y1), (x2, y2) = clicks
-        x = min(x1, x2)
-        y = min(y1, y2)
-        w = abs(x2 - x1)
-        h = abs(y2 - y1)
-        self.cfg["battle_list"] = {"x": x, "y": y, "width": w, "height": h}
-        save_config(self.cfg)
-        self.log(f"battle list calibrada: x={x} y={y} w={w} h={h}")
-        self._refresh()
-
-    def _add_marker(self):
-        self.log("adicione marker: clique na posição da tela")
-        self.root.withdraw()
-
-        def on_click(x, y, button, pressed):
-            if not pressed:
-                return
-            self.root.after(0, lambda: self._finish_add_marker(x, y))
-            return False
-
-        listener = pynput_mouse.Listener(on_click=on_click)
-        listener.start()
-
-    def _finish_add_marker(self, x, y):
-        self.root.deiconify()
-        self.cfg.setdefault("markers", []).append({"x": x, "y": y})
-        save_config(self.cfg)
-        self.log(f"marker adicionado: ({x}, {y})")
-        self._refresh()
-
-    def _remove_marker(self):
-        idx = self.markers_list.curselection()
-        if not idx:
-            return
-        self.cfg["markers"].pop(idx[0])
-        save_config(self.cfg)
-        self._refresh()
-
-    def _clear_markers(self):
-        self.cfg["markers"] = []
-        save_config(self.cfg)
-        self._refresh()
+    def _finish_calibration(self, cfg_key):
+        def done(clicks):
+            (x1, y1), (x2, y2) = clicks
+            region = {
+                "x": min(x1, x2),
+                "y": min(y1, y2),
+                "width": abs(x2 - x1),
+                "height": abs(y2 - y1),
+            }
+            self.cfg[cfg_key] = region
+            save_config(self.cfg)
+            self.log(f"{cfg_key} calibrada: {region}")
+            self._refresh()
+        return done
 
     def _save_delays(self):
         self.cfg["walk_delay_min"] = float(self.delay_min_var.get())
@@ -168,6 +122,9 @@ class App:
         if not self.cfg.get("battle_list"):
             messagebox.showerror("Erro", "Calibre a battle list primeiro.")
             return
+        if not self.cfg.get("minimap"):
+            messagebox.showerror("Erro", "Calibre o minimap primeiro.")
+            return
         self.runner.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -178,9 +135,16 @@ class App:
         self.stop_btn.config(state="disabled")
 
 
+def _fmt_region(label, region):
+    if not region:
+        return f"{label}: (não calibrada)"
+    return (f"{label}: x={region['x']:.0f} y={region['y']:.0f} "
+            f"w={region['width']:.0f} h={region['height']:.0f}")
+
+
 def main():
     root = tk.Tk()
-    app = App(root)
+    App(root)
     root.mainloop()
 
 

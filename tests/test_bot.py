@@ -7,7 +7,7 @@ class FakeEnv:
         self.has_target = False
         self.actions = []
         self.sleeps = []
-        self.markers = [{"x": 100, "y": 200}, {"x": 300, "y": 400}]
+        self.markers = [(100, 200), (300, 400)]
         self._marker_choice_idx = 0
 
     def is_attacking(self):
@@ -36,6 +36,9 @@ class FakeEnv:
     def walk_delay(self):
         return 2.0
 
+    def find_markers(self):
+        return list(self.markers)
+
 
 def make_bot(env):
     return Bot(
@@ -47,7 +50,7 @@ def make_bot(env):
         sleep=env.sleep,
         choose_marker=env.choose_marker,
         walk_delay=env.walk_delay,
-        get_markers=lambda: env.markers,
+        find_markers=env.find_markers,
     )
 
 
@@ -64,22 +67,34 @@ def test_tick_waits_when_already_attacking():
     env.attacking = True
     bot = make_bot(env)
     bot.tick()
-    assert env.actions == []  # nenhuma ação nova
+    assert env.actions == []
     assert bot.was_attacking is True
 
 
 def test_tick_loots_after_kill():
     env = FakeEnv()
     bot = make_bot(env)
-    # primeiro tick: atacando
     env.attacking = True
     bot.tick()
-    # segundo tick: inimigo morreu (attacking=False, has_target=False)
     env.attacking = False
     env.has_target = False
     bot.tick()
     assert ("loot",) in env.actions
     assert bot.was_attacking is False
+
+
+def test_tick_attacks_next_target_immediately_after_loot():
+    """Após loot, se ainda há alvo na battle list, ataca no mesmo tick."""
+    env = FakeEnv()
+    bot = make_bot(env)
+    env.attacking = True
+    bot.tick()
+    env.attacking = False
+    env.has_target = True
+    bot.tick()
+    idx_loot = env.actions.index(("loot",))
+    idx_space = env.actions.index(("space",))
+    assert idx_loot < idx_space
 
 
 def test_tick_walks_to_marker_when_idle():
@@ -94,13 +109,11 @@ def test_tick_no_walk_when_no_markers():
     env.markers = []
     bot = make_bot(env)
     bot.tick()
-    # sem alvo e sem markers → nenhuma ação de click
     assert all(a[0] != "click" for a in env.actions)
 
 
 def test_does_not_loot_without_prior_attack():
     env = FakeEnv()
     bot = make_bot(env)
-    # nunca esteve em attacking
     bot.tick()
     assert ("loot",) not in env.actions

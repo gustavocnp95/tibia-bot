@@ -8,11 +8,9 @@ CONFIG_PATH = "config.json"
 def default_config():
     return {
         "battle_list": None,   # {"x","y","width","height"} ou None
-        "game_area": None,
-        "markers": [],         # lista de {"x","y"} em coords de tela
+        "minimap": None,       # região do minimap onde procurar markers check verdes
         "walk_delay_min": 1.5, # segundos antes de próxima ação após clicar marker
         "walk_delay_max": 3.0,
-        "attack_timeout": 8.0, # segundos máx esperando kill antes de re-avaliar
     }
 
 
